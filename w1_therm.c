@@ -263,8 +263,6 @@ static struct w1_therm_family_converter w1_therm_families[] = {
 	}
 };
 
-
-
 static inline int w1_therm_eeprom(struct device *device)
 {
 	struct w1_slave *sl = dev_to_w1_slave(device);
@@ -337,7 +335,6 @@ dec_refcnt:
 error:
 	return ret;
 }
-
 
 /* DS18S20 does not feature configuration register */
 static inline int w1_DS18S20_precision(struct device *device, int val)
@@ -427,7 +424,6 @@ error:
 	return ret;
 }
 
-
 static inline unsigned int w1_DS18B20_convert_time(u8 rom[9])
 {
 	switch (rom[4]&0x60){
@@ -509,7 +505,6 @@ static inline int family_config_reg(u8 fid)
 
 	return 750;
 }
-
 
 static ssize_t w1_slave_store(struct device *device,
 			      struct device_attribute *attr, const char *buf,
@@ -593,7 +588,6 @@ static ssize_t read_therm(struct device *device,
 			if (w1_reset_select_slave(sl))
 				continue;
 
-			
 			/* 750ms strong pullup (or delay) after the convert */
 			if (w1_strong_pullup == 2 ||
 					(!external_power && w1_strong_pullup))
