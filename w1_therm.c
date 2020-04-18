@@ -198,6 +198,8 @@ struct w1_therm_family_converter {
 	u16			reserved;
 	struct w1_family	*f;
 	int			(*convert)(u8 rom[9]);
+	unsigned int		(*convert_time)(u8 rom[9]);
+	int			config_reg;
 	int			(*precision)(struct device *device, int val);
 	int			(*eeprom)(struct device *device);
 };
@@ -209,6 +211,11 @@ static inline int w1_therm_eeprom(struct device *device);
 static inline int w1_DS18B20_precision(struct device *device, int val);
 static inline int w1_DS18S20_precision(struct device *device, int val);
 
+/* The return value is the max converting time, by the configured resolution. 
+The chip require a configuration register */
+static inline unsigned int w1_DS18B20_convert_time(u8 rom[9]);
+static inline unsigned int w1_DS18S20_convert_time(u8 rom[9]);
+
 /* The return value is millidegrees Centigrade. */
 static inline int w1_DS18B20_convert_temp(u8 rom[9]);
 static inline int w1_DS18S20_convert_temp(u8 rom[9]);
@@ -217,34 +224,46 @@ static struct w1_therm_family_converter w1_therm_families[] = {
 	{
 		.f		= &w1_therm_family_DS18S20,
 		.convert	= w1_DS18S20_convert_temp,
+		.convert_time	= w1_DS18S20_convert_time,
+		.config_reg	= 0,
 		.precision	= w1_DS18S20_precision,
 		.eeprom		= w1_therm_eeprom
 	},
 	{
 		.f		= &w1_therm_family_DS1822,
 		.convert	= w1_DS18B20_convert_temp,
+		.convert_time	= w1_DS18S20_convert_time,
+		.config_reg	= 0,
 		.precision	= w1_DS18S20_precision,
 		.eeprom		= w1_therm_eeprom
 	},
 	{
 		.f		= &w1_therm_family_DS18B20,
 		.convert	= w1_DS18B20_convert_temp,
+		.convert_time	= w1_DS18B20_convert_time,
+		.config_reg	= 1,
 		.precision	= w1_DS18B20_precision,
 		.eeprom		= w1_therm_eeprom
 	},
 	{
 		.f		= &w1_therm_family_DS28EA00,
 		.convert	= w1_DS18B20_convert_temp,
+		.convert_time	= w1_DS18S20_convert_time,
+		.config_reg	= 0,
 		.precision	= w1_DS18S20_precision,
 		.eeprom		= w1_therm_eeprom
 	},
 	{
 		.f		= &w1_therm_family_DS1825,
 		.convert	= w1_DS18B20_convert_temp,
+		.convert_time	= w1_DS18S20_convert_time,
+		.config_reg	= 0,
 		.precision	= w1_DS18S20_precision,
 		.eeprom		= w1_therm_eeprom
 	}
 };
+
+
 
 static inline int w1_therm_eeprom(struct device *device)
 {
@@ -318,6 +337,7 @@ dec_refcnt:
 error:
 	return ret;
 }
+
 
 /* DS18S20 does not feature configuration register */
 static inline int w1_DS18S20_precision(struct device *device, int val)
@@ -407,6 +427,27 @@ error:
 	return ret;
 }
 
+
+static inline unsigned int w1_DS18B20_convert_time(u8 rom[9])
+{
+	switch (rom[4]&0x60){
+		case 0x00:	
+			return 94;
+		case 0x20:
+			return 188;
+		case 0x40: 
+			return 375;
+		default:
+			return 750;
+	}	
+}
+
+/* DS18S20 does not feature configuration register */
+static inline unsigned int w1_DS18S20_convert_time(u8 rom[9])
+{
+	return 750;
+}
+
 static inline int w1_DS18B20_convert_temp(u8 rom[9])
 {
 	s16 t = le16_to_cpup((__le16 *)rom);
@@ -444,6 +485,31 @@ static inline int w1_convert_temp(u8 rom[9], u8 fid)
 
 	return 0;
 }
+
+static inline int w1_convert_time(u8 rom[9], u8 fid)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(w1_therm_families); ++i)
+		if (w1_therm_families[i].f->fid == fid){
+			return w1_therm_families[i].convert_time(rom);
+		}
+
+	return 750;
+}
+
+static inline int family_config_reg(u8 fid)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(w1_therm_families); ++i)
+		if (w1_therm_families[i].f->fid == fid){
+			return w1_therm_families[i].config_reg;
+		}
+
+	return 750;
+}
+
 
 static ssize_t w1_slave_store(struct device *device,
 			      struct device_attribute *attr, const char *buf,
@@ -500,7 +566,26 @@ static ssize_t read_therm(struct device *device,
 		if (!w1_reset_select_slave(sl)) {
 			int count = 0;
 			unsigned int tm = 750;
+			unsigned int convert_tm = 750;
 			unsigned long sleep_rem;
+		
+			if(family_config_reg(sl->family->fid)){
+				w1_write_8(dev, W1_READ_SCRATCHPAD);
+				count = w1_read_block(dev, info->rom, 9);
+				if (count != 9) {
+					dev_warn(device, "w1_read_block() "
+						"returned %u instead of 9.\n",
+						count);
+				}
+				info->crc = w1_calc_crc8(info->rom, 8);
+
+				if (info->rom[8] == info->crc){
+					convert_tm = w1_convert_time(info->rom,sl->family->fid);
+				} else {
+					continue;
+				}
+			}
+			
 
 			w1_write_8(dev, W1_READ_PSUPPLY);
 			external_power = w1_read_8(dev);
@@ -508,6 +593,7 @@ static ssize_t read_therm(struct device *device,
 			if (w1_reset_select_slave(sl))
 				continue;
 
+			
 			/* 750ms strong pullup (or delay) after the convert */
 			if (w1_strong_pullup == 2 ||
 					(!external_power && w1_strong_pullup))
@@ -518,7 +604,7 @@ static ssize_t read_therm(struct device *device,
 			if (external_power) {
 				mutex_unlock(&dev->bus_mutex);
 
-				sleep_rem = msleep_interruptible(tm);
+				sleep_rem = msleep_interruptible(convert_tm);
 				if (sleep_rem != 0) {
 					ret = -EINTR;
 					goto dec_refcnt;
@@ -528,7 +614,7 @@ static ssize_t read_therm(struct device *device,
 				if (ret != 0)
 					goto dec_refcnt;
 			} else if (!w1_strong_pullup) {
-				sleep_rem = msleep_interruptible(tm);
+				sleep_rem = msleep_interruptible(convert_tm);
 				if (sleep_rem != 0) {
 					ret = -EINTR;
 					goto mt_unlock;
