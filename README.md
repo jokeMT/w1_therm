@@ -1,2 +1,5 @@
 # w1_therm
-Linux Kernel Module 1wire therm sensor
+1wire therm sensor Linux Kernel Module
+
+added:
+ 	DS18B20: Set convert delay, by selected bit resolution. 
